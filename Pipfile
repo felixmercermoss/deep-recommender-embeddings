@@ -12,13 +12,10 @@ pandas = "*"
 numpy = "*"
 nltk = "*"
 matplotlib = "*"
-
-
+annoy = "*"
+jupyter = "*"
 
 [dev-packages]
 
 [requires]
 python_version = "3.8"
-
-
-
