@@ -4,7 +4,7 @@ import tensorflow as tf
 
 # import tensorflow_datasets as tfds
 
-from deep_recommender_embeddings.src.models import DCN
+from deep_recommender_embeddings.src.models import DCN, ItemSimilarityModel
 from deep_recommender_embeddings.src.elasticsearch_utils import (
     get_data_from_es,
     get_es_instance,
@@ -23,7 +23,7 @@ def get_item_data():
     _es_host = "localhost"
     _es_port = "9200"
     es = get_es_instance(es_host=_es_host, es_port=_es_port)
-    prediction_time = "2020-12-02T00:00:00"
+    prediction_time = "2020-09-01T00:00:00"
     max_age_days = 90
 
     features = [
@@ -95,13 +95,26 @@ if __name__ == "__main__":
     vocabularies = get_item_data()
     sfv_train, sfv_val = get_user_journey(vocabularies["item_id"])
     num_epochs = 2
-    lr = 0.01
-    cached_train = sfv_train.batch(1024).cache()
-    cached_test = sfv_val.batch(1024).cache()
+    lr = 0.0001
+    cached_train = sfv_train.batch(64).cache()
+    cached_test = sfv_val.batch(64).cache()
     model_one_layer = DCN(
-        use_cross_layer=False, deep_layer_sizes=[64, 32, 32], vocabularies=vocabularies
+        use_cross_layer=True, deep_layer_sizes=[64], vocabularies=vocabularies, embedding_dimension=[64, 64, 64], features=["body", "category"]
     )
-    model_one_layer.compile(optimizer=tf.keras.optimizers.Adagrad(lr))
+    # str_features = ["body", "tags", "category"]
+    # id_features = ["item_id"]
+    # model_one_layer = ItemSimilarityModel(
+    #     test_candidate_ids=vocabularies["item_id"],
+    #     features=str_features + id_features,
+    #     feature_dims=[64,64,64,64],
+    #     unique_item_ids=vocabularies["item_id"],
+    #     item_body_lookup=vocabularies.get("body", None),
+    #     item_tags_lookup=vocabularies.get("tags", None),
+    #     item_category_lookup=vocabularies.get("category", None),
+    #     layer_sizes=[64],
+    #     compute_metrics=True,
+    # )
+    model_one_layer.compile(optimizer=tf.keras.optimizers.Adam(lr))
 
     one_layer_history = model_one_layer.fit(
         cached_train,

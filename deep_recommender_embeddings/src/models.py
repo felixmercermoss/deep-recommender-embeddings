@@ -307,7 +307,7 @@ class DeepItemModel(tf.keras.Model):
         # No activation for the last layer.
         self.dcn_layers.add(
             tf.keras.layers.Dense(
-                layer_size,
+                deep_layer_sizes[-1],
                 kernel_initializer=VarianceScaling(),
                 bias_initializer=VarianceScaling(),
                 name=f"dense_layer_{len(deep_layer_sizes)}_{str(uuid.uuid4())}",
@@ -475,14 +475,16 @@ class DCN(tfrs.Model):
         use_cross_layer,
         deep_layer_sizes,
         vocabularies,
+        embedding_dimension,
+        features=["body", "tags", "category"],
         projection_dim=None,
         compute_metrics=True,
     ):
         super().__init__()
 
-        self.embedding_dimension = [32, 32, 32, 32]
+        self.embedding_dimension = embedding_dimension
 
-        str_features = ["body", "tags", "category"]
+        str_features = features
         id_features = ["item_id"]
 
         self.item_model = DeepCrossItemModel(
