@@ -507,7 +507,7 @@ class DCN(tfrs.Model):
             vocabularies.get("item_id", None)
         )
         self.task = tfrs.tasks.Retrieval(
-            loss=tf.keras.losses.CategoricalCrossentropy(),
+            loss=tf.keras.losses.CosineSimilarity(),
             metrics=tfrs.metrics.FactorizedTopK(
                 candidates=test_candidate_ids.batch(512).map(self.item_model)
             ),

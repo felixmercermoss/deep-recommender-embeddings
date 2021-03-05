@@ -101,19 +101,7 @@ if __name__ == "__main__":
     model_one_layer = DCN(
         use_cross_layer=True, deep_layer_sizes=[64], vocabularies=vocabularies, embedding_dimension=[64, 64, 64], features=["body", "category"]
     )
-    # str_features = ["body", "tags", "category"]
-    # id_features = ["item_id"]
-    # model_one_layer = ItemSimilarityModel(
-    #     test_candidate_ids=vocabularies["item_id"],
-    #     features=str_features + id_features,
-    #     feature_dims=[64,64,64,64],
-    #     unique_item_ids=vocabularies["item_id"],
-    #     item_body_lookup=vocabularies.get("body", None),
-    #     item_tags_lookup=vocabularies.get("tags", None),
-    #     item_category_lookup=vocabularies.get("category", None),
-    #     layer_sizes=[64],
-    #     compute_metrics=True,
-    # )
+
     model_one_layer.compile(optimizer=tf.keras.optimizers.Adam(lr))
 
     one_layer_history = model_one_layer.fit(
