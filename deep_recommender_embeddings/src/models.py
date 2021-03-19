@@ -526,3 +526,334 @@ class DCN(tfrs.Model):
             candidate_embeddings=item_b_embeddings,
             compute_metrics=self.compute_metrics,
         )
+
+
+class DeepFMItemEmbeddingModel(tf.keras.Model):
+    def __init__(
+        self,
+        features=None,
+        feature_dims=None,
+        unique_item_ids=None,
+        item_body_lookup=None,
+        item_tags_lookup=None,
+        item_category_lookup=None,
+        item_image_lookup=None,
+        image_embedding_lookup_table=None,
+        layer_size=None
+    ):
+        super().__init__()
+
+        self.features = features
+        self.IMAGE_SHAPE = (96, 96)
+        self.layer_size = layer_size
+
+        for feature, embedding_dim in zip(self.features, feature_dims):
+            # Define run_scripts for item_id embedding generation
+            if "item_id" == feature:
+
+                self.item_id_embedding = tf.keras.Sequential(
+                    [
+                        tf.keras.layers.experimental.preprocessing.StringLookup(
+                            vocabulary=unique_item_ids,
+                            mask_token=None,
+                            name="item_id_string_lookup_layer",
+                        ),
+                        tf.keras.layers.Embedding(
+                            input_dim=len(unique_item_ids) + 1,
+                            output_dim=embedding_dim,
+                            name="item_id_embedding_layer",
+                        ),
+                    ],
+                    name="sequential_id_embedding",
+                )
+                self.item_id_embedding.add(tf.keras.layers.Dense(embedding_dim, activation='relu'))
+
+            # Define run_scripts for body embedding generation
+            if "body" == feature:
+                max_tokens = 10_000
+                self.item_body_lookup_table = item_body_lookup
+                self.body_embedding = tf.keras.Sequential(
+                    [
+                        tf.keras.layers.experimental.preprocessing.TextVectorization(
+                            max_tokens=max_tokens, name="body_text_vectorisation_layer"
+                        ),
+                        tf.keras.layers.Embedding(
+                            input_dim=max_tokens,
+                            output_dim=embedding_dim,
+                            mask_zero=True,
+                            name="body_embedding_layer",
+                        ),
+                        tf.keras.layers.GlobalAveragePooling1D(
+                            name="body_global_averaging_pooling_layer"
+                        ),
+                    ],
+                    name="sequential_body_embedding",
+                )
+                self.body_embedding.add(tf.keras.layers.Dense(embedding_dim, activation='relu'))
+
+                # Define run_scripts for tags embedding generation
+            if "tags" == feature:
+                self.max_tokens = 10_000
+                self.item_tags_lookup_table = item_tags_lookup
+                self.tags_embedding = tf.keras.Sequential(
+                    [
+                        tf.keras.layers.experimental.preprocessing.TextVectorization(
+                            max_tokens=self.max_tokens, name="tags_text_vectorisation_layer"
+                        ),
+                        tf.keras.layers.Embedding(
+                            input_dim=self.max_tokens,
+                            output_dim=embedding_dim,
+                            mask_zero=True,
+                            name="tags_embedding_layer",
+                        ),
+                        tf.keras.layers.GlobalAveragePooling1D(
+                            name="tags_global_averaging_pooling_layer"
+                        ),
+                        tf.keras.layers.Dense(embedding_dim, activation='relu')
+                    ],
+                    name="sequential_tags_embedding",
+                )
+                self.tags_embedding_shallow = tf.keras.Sequential(
+                    [
+                        tf.keras.layers.experimental.preprocessing.TextVectorization(
+                            max_tokens=self.max_tokens, name="tags_text_vectorisation_layer"
+                        ),
+                        tf.keras.layers.Embedding(
+                            input_dim=self.max_tokens,
+                            output_dim=embedding_dim,
+                            mask_zero=True,
+                            name="tags_embedding_layer",
+                        ),
+                        tf.keras.layers.GlobalAveragePooling1D(
+                            name="tags_global_averaging_pooling_layer"
+                        ),
+                    ],
+                    name="sequential_tags_embedding_shallow",
+                )
+
+            if "category" == feature:
+                _, values = item_category_lookup.export()
+                self.item_category_lookup_table = item_category_lookup
+                self.unique_categories = np.unique(values.numpy())
+                self.category_embedding = tf.keras.Sequential(
+                    [
+                        tf.keras.layers.experimental.preprocessing.StringLookup(
+                            vocabulary=self.unique_categories,
+                            mask_token=None,
+                            name="category_string_lookup_layer",
+                        ),
+                        tf.keras.layers.Embedding(
+                            input_dim=len(self.unique_categories) + 1,
+                            output_dim=embedding_dim,
+                            name="category_embedding_layer",
+                        ),
+                        tf.keras.layers.Dense(embedding_dim, activation='relu')
+                    ],
+                    name="sequential_category_embedding",
+                )
+                self.category_embedding_shallow = tf.keras.Sequential(
+                    [
+                        tf.keras.layers.experimental.preprocessing.StringLookup(
+                            vocabulary=self.unique_categories,
+                            mask_token=None,
+                            name="category_string_lookup_layer",
+                        ),
+                        tf.keras.layers.Embedding(
+                            input_dim=len(self.unique_categories) + 1,
+                            output_dim=embedding_dim,
+                            name="category_embedding_layer",
+                        ),],
+                    name="sequential_category_embedding_shallow",
+                )
+
+            if "image_embedding" == feature:
+                self.image_embedding_lookup_table = image_embedding_lookup_table
+                _, values = self.image_embedding_lookup_table.export()
+                if embedding_dim:
+                    self.image_embedding_model = tf.keras.Sequential(
+                        [
+                            tf.keras.Input(shape=values.numpy()[0].shape),
+                            tf.keras.layers.Dense(
+                                embedding_dim,
+                                activation="relu",
+                                kernel_initializer=VarianceScaling(),
+                                bias_initializer=VarianceScaling(),
+                                name=f"image_dense_layer_{str(uuid.uuid4())}",
+                            ),
+                        ]
+                    )
+
+                else:
+                    self.image_embedding_model = tf.keras.Sequential(
+                        [tf.keras.Input(shape=values.numpy()[0].shape)]
+                    )
+
+            if isinstance(embedding_dim, dict):
+                if embedding_dim.get("format") == "image":
+                    # IMAGE_MODEL_LINK ="https://tfhub.dev/google/tf2-preview/mobilenet_v2/feature_vector/4"
+                    # IMAGE_MODEL_LINK = "https://tfhub.dev/google/imagenet/inception_v3/feature_vector/4"
+                    model_link = embedding_dim.get(
+                        "link",
+                        "https://tfhub.dev/google/imagenet/mobilenet_v2_100_96/feature_vector/4",
+                    )
+                    print(f"Using pretrained IMAGE run_scripts: {model_link}")
+                    self.item_image_lookup_table = item_image_lookup
+                    self.image_embedding = tf.keras.Sequential(
+                        [
+                            hub.KerasLayer(
+                                model_link,
+                                input_shape=self.IMAGE_SHAPE + (3,),
+                                trainable=False,
+                            ),
+                            # tf.keras.layers.Embedding(input_dim=len(unique_item_ids) + 1, output_dim=embedding_dim, name="image_embedding_layer"),
+                            #  tf.keras.layers.GlobalAveragePooling1D(name="image_global_averaging_pooling_layer")
+                        ]
+                    )
+
+                if embedding_dim.get("format") == "text":
+                    model_link = embedding_dim.get(
+                        "link", "https://tfhub.dev/google/nnlm-en-dim50/2"
+                    )
+                    print(f"Using pretrained TEXT run_scripts: {model_link}")
+                    self.item_body_lookup_table = item_body_lookup
+                    self.text_model_embedding = tf.keras.Sequential(
+                        [
+                            hub.KerasLayer(
+                                model_link,
+                                input_shape=[],
+                                dtype=tf.string,
+                                trainable=False,
+                            )
+                            # tf.keras.layers.Embedding(input_dim=MODEL_DIM, output_dim=embedding_dim, mask_zero=True, name="text_model_embedding_layer")
+                            # tf.keras.layers.GlobalAveragePooling1D(name="text_model_global_averaging_pooling_layer")
+                        ]
+                    )
+
+    def read_image(self, file_url):
+        file_url_string = file_url.numpy().decode()
+        if file_url_string == "nill":
+            return (
+                np.zeros(shape=(1, self.IMAGE_SHAPE[0], self.IMAGE_SHAPE[1], 3)) + 0.5
+            )
+        try:
+            im = tf.keras.utils.get_file(
+                file_url_string.replace("/", "_"), file_url_string
+            )
+            im = Image.open(im).resize(self.IMAGE_SHAPE)
+            im = np.array(im) / 255.0
+            try:
+                im = im[:, :, :3]
+            except (IndexError, UnknownError):
+                im = np.repeat(im[:, :, np.newaxis], 3, axis=2)
+            return im[np.newaxis, ...]
+        except:
+            return (
+                np.zeros(shape=(1, self.IMAGE_SHAPE[0], self.IMAGE_SHAPE[1], 3)) + 0.5
+            )
+
+    def call(self, inputs):
+
+        feature_embeddings = []
+
+        if "item_id" in self.features:
+            deep_item_id_embedding = self.item_id_embedding(inputs)
+            feature_embeddings.append(deep_item_id_embedding)
+
+        if "body" in self.features:
+            body = self.item_body_lookup_table.lookup(inputs)
+            deep_body_embedding = self.body_embedding(body)
+            feature_embeddings.append(deep_body_embedding)
+
+        if "tags" in self.features:
+            tags = self.item_tags_lookup_table.lookup(inputs)
+            deep_tags_embedding = self.tags_embedding(tags)
+            feature_embeddings.append(deep_tags_embedding)
+
+        if "category" in self.features:
+            category = self.item_category_lookup_table.lookup(inputs)
+            deep_category_embedding = self.category_embedding(category)
+            feature_embeddings.append(deep_category_embedding)
+
+        if "image_embedding" in self.features:
+            image_vector = self.image_embedding_lookup_table.lookup(inputs)
+            image_vector = self.image_embedding_model(image_vector)
+            feature_embeddings.append(image_vector)
+
+        if "image" in self.features:
+            image_url = self.item_image_lookup_table.lookup(inputs)
+            image = tf.map_fn(
+                fn=lambda s: tf.py_function(self.read_image, inp=[s], Tout=tf.float64),
+                elems=image_url,
+                fn_output_signature=tf.float64,
+            )
+            image = tf.cast(tf.squeeze(image), tf.float32)
+            feature_embeddings.append(self.image_embedding(image))
+
+        if "text_model" in self.features:
+            text = self.item_body_lookup_table.lookup(inputs)
+            feature_embeddings.append(self.text_model_embedding(text))
+
+        if "tags" in self.features and "category" in self.features:
+            product_layer_tag_category = tf.keras.layers.Dot(axes=1)([self.tags_embedding_shallow(tags), self.category_embedding_shallow(category)])
+            feature_embeddings.append(product_layer_tag_category)
+
+        concat_layer = tf.concat(feature_embeddings, axis=1)
+        return concat_layer
+
+
+class DeepFM(tfrs.Model):
+    def __init__(
+        self,
+        deep_layer_size,
+        vocabularies,
+        embedding_dimension,
+        features=["body", "tags", "category"],
+        compute_metrics=True,
+    ):
+        super().__init__()
+
+        self.embedding_dimension = embedding_dimension
+
+        str_features = features
+        id_features = ["item_id"]
+
+        # self.item_model = DeepFMItemEmbeddingModel(
+        self.item_model = DeepFMItemEmbeddingModel(
+            features=str_features + id_features,
+            feature_dims=self.embedding_dimension,
+            unique_item_ids=vocabularies.get("item_id", None),
+            item_body_lookup=vocabularies.get("body", None),
+            item_tags_lookup=vocabularies.get("tags", None),
+            item_category_lookup=vocabularies.get("category", None),
+            item_image_lookup=vocabularies.get("image", None),
+            image_embedding_lookup_table=vocabularies.get("image_embedding", None),
+            layer_size=deep_layer_size
+        )
+
+        self.compute_metrics = compute_metrics
+
+        test_candidate_ids = tf.data.Dataset.from_tensor_slices(
+            vocabularies.get("item_id", None)
+        )
+        self.task = tfrs.tasks.Retrieval(
+            loss=tf.keras.losses.CosineSimilarity(),
+            metrics=tfrs.metrics.FactorizedTopK(
+                candidates=test_candidate_ids.batch(512).map(self.item_model)
+            ),
+        )
+
+    def compute_loss(
+        self, raw_features: Dict[Text, tf.Tensor], training=False
+    ) -> tf.Tensor:
+        # Define how the loss is computed.
+
+        item_a_embeddings = self.item_model(raw_features["item_a"])
+        item_b_embeddings = self.item_model(raw_features["item_b"])
+
+        return self.task(
+            query_embeddings=item_a_embeddings,
+            candidate_embeddings=item_b_embeddings,
+            compute_metrics=self.compute_metrics,
+        )
+
+
