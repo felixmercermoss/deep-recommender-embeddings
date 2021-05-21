@@ -12,10 +12,79 @@ from tensorflow.python.framework.errors_impl import UnknownError
 from tensorflow.python.keras.initializers.initializers_v2 import VarianceScaling
 
 
+class UserEmbeddingModel(tf.keras.Model):
+
+    def __init__(self, features=['location'], feature_dims=[32], location_vocab=[], unique_item_ids=[]):
+        super().__init__()
+        self.features = features
+        for feature, embedding_dim in zip(self.features, feature_dims):
+            if 'location' == feature:
+                if len(location_vocab) > 0:
+                    location_lookup_layer =\
+                        tf.keras.layers.experimental.preprocessing.StringLookup(vocabulary=location_vocab,
+                                                                                name="location_lookup_layer")
+                else:
+                    num_hashing_bins = 20_000
+                    location_lookup_layer = tf.keras.layers.experimental.preprocessing.Hashing(
+                                            num_bins=num_hashing_bins
+                                            )
+
+                embedding_layer = \
+                    tf.keras.layers.Embedding(input_dim=location_lookup_layer.vocab_size(), output_dim=embedding_dim,
+                                              name="location_embedding_layer")
+
+                self.location_embedding = tf.keras.Sequential([
+                    location_lookup_layer,
+                    embedding_layer
+                ], name='sequential_location_embedding')
+
+            if 'user_id' == feature:
+                num_hashing_bins = 1_000_000
+                user_id_lookup_layer = tf.keras.layers.experimental.preprocessing.Hashing(
+                                        num_bins=num_hashing_bins
+                                        )
+
+                embedding_layer = \
+                    tf.keras.layers.Embedding(input_dim=user_id_lookup_layer.vocab_size(), output_dim=embedding_dim,
+                                              name="user_id_embedding_layer")
+
+                self.user_id_embedding = tf.keras.Sequential([
+                    embedding_layer
+                ], name='sequential_location_embedding')
+            if 'item_id' == feature:
+                self.item_id_embedding = tf.keras.Sequential([
+                    tf.keras.layers.experimental.preprocessing.StringLookup(
+                        vocabulary=unique_item_ids, mask_token=None, name="item_id_string_lookup_layer"),
+                    tf.keras.layers.Embedding(input_dim=len(unique_item_ids) + 1, output_dim=embedding_dim,
+                                              name="item_id_embedding_layer"),
+                ], name='sequential_id_embedding')
+
+
+    def call(self, inputs):
+
+        feature_embeddings = []
+
+        if 'location' in self.features:
+            #feature_embeddings.append(self.location_embedding(inputs[0]))
+            feature_embeddings.append(self.location_embedding(inputs['user_location']))
+
+        if 'user_id' in self.features:
+            #feature_embeddings.append(self.user_id_embedding(inputs[1]))
+            feature_embeddings.append(self.user_id_embedding(inputs['user_item']))
+
+
+        if len(feature_embeddings) == 0:
+            raise ValueError('No embeddings generated')
+
+        return tf.concat(feature_embeddings, axis=1)
+
+
+
+
 class ItemEmbeddingModel(tf.keras.Model):
 
   def __init__(self, features=['item_id', 'body'], feature_dims=[32, 32], unique_item_ids=None, item_body_lookup=None, item_tags_lookup=None,
-              item_category_lookup=None, item_image_lookup=None, image_embedding_lookup_table=None):
+              item_category_lookup=None, item_image_lookup=None, image_embedding_lookup_table=None, precomputed_embedding_lookup_table=None):
     super().__init__()
 
     self.features = features
@@ -77,6 +146,20 @@ class ItemEmbeddingModel(tf.keras.Model):
             else:
                 self.image_embedding_model = tf.keras.Sequential([tf.keras.Input(shape=values.numpy()[0].shape)])
 
+        if 'precomputed_embedding' == feature:
+            self.precomputed_embedding_lookup_table = precomputed_embedding_lookup_table
+            _, values = self.precomputed_embedding_lookup_table.export()
+            if embedding_dim:
+                self.precomputed_embedding_model = tf.keras.Sequential([tf.keras.Input(shape=values.numpy()[0].shape),
+                                                                  tf.keras.layers.Dense(embedding_dim,
+                                                                                        activation="relu",
+                                                                                        kernel_initializer=VarianceScaling(),
+                                                                                        bias_initializer=VarianceScaling(),
+                                                                                        name=f"precomputed_dense_layer_{str(uuid.uuid4())}")
+                                                                  ])
+
+            else:
+                self.precomputed_embedding_model = tf.keras.Sequential([tf.keras.Input(shape=values.numpy()[0].shape)])
 
         if isinstance(embedding_dim, dict):
             if embedding_dim.get('format') == 'image':
@@ -142,6 +225,12 @@ class ItemEmbeddingModel(tf.keras.Model):
         image_vector = self.image_embedding_model(image_vector)
         feature_embeddings.append(image_vector)
 
+    if 'precomputed_embedding' in self.features:
+        print('got here')
+        precomputed_vector = self.precomputed_embedding_lookup_table.lookup(inputs)
+        precomputed_vector = self.precomputed_embedding_model(precomputed_vector)
+        feature_embeddings.append(precomputed_vector)
+
     if 'image' in self.features:
         image_url = self.item_image_lookup_table.lookup(inputs)
         image = tf.map_fn(fn=lambda s:tf.py_function(self.read_image, inp=[s], Tout=tf.float64), elems=image_url, fn_output_signature=tf.float64)
@@ -152,14 +241,59 @@ class ItemEmbeddingModel(tf.keras.Model):
         text = self.item_body_lookup_table.lookup(inputs)
         feature_embeddings.append(self.text_model_embedding(text))
 
+    if len(feature_embeddings) == 0:
+        raise ValueError('No embeddings generated')
+
     return tf.concat(feature_embeddings, axis=1)
+
+
+class DeepUserModel(tf.keras.Model):
+
+  def __init__(self, features=['location'], feature_dims=[32], location_vocab=[], layer_sizes=[32]):
+    """Model for encoding users.
+
+    Args:
+      layer_sizes:
+        A list of integers where the i-th entry represents the number of units
+        the i-th layer contains.
+    """
+    super().__init__()
+
+    self.embedding_model = UserEmbeddingModel(features=features,
+                                              feature_dims=feature_dims,
+                                              location_vocab=location_vocab)
+
+     # Then construct the layers.
+    self.dense_layers = tf.keras.Sequential(name='sequential_user_deep')
+
+     # Use the ReLU activation for all but the last layer.
+    for i, layer_size in enumerate(layer_sizes[:-1]):
+        self.dense_layers.add(tf.keras.layers.Dense(layer_size,
+                                                    activation="relu",
+                                                    kernel_initializer=VarianceScaling(),
+                                                    bias_initializer=VarianceScaling(),
+                                                    name=f"user_dense_layer_{i+1}_{str(uuid.uuid4())}"))
+#         Batch normalization after the first layer
+#         if i == 0:
+#             self.dense_layers.add(tf.keras.layers.BatchNormalization())
+
+    # No activation for the last layer.
+    for layer_size in layer_sizes[-1:]:
+        self.dense_layers.add(tf.keras.layers.Dense(layer_size,
+                                                    kernel_initializer=VarianceScaling(),
+                                                    bias_initializer=VarianceScaling(),
+                                                    name=f"user_dense_layer_{len(layer_sizes)}_{str(uuid.uuid4())}"))
+
+  def call(self, inputs):
+    feature_embedding = self.embedding_model(inputs)
+    return self.dense_layers(feature_embedding)
 
 
 class DeepItemModel(tf.keras.Model):
 
-  def __init__(self, features=['item_id', 'body'], feature_dims=[32, 32], unique_item_ids=None, item_body_lookup=None,
+  def __init__(self, features=['item', 'body'], feature_dims=[32, 32], unique_item_ids=None, item_body_lookup=None,
                item_tags_lookup=None, item_category_lookup=None, item_image_lookup=None, image_embedding_lookup_table=None,
-               layer_sizes=[32]):
+               precomputed_embedding_lookup=None,layer_sizes=[32]):
     """Model for encoding items.
 
     Args:
@@ -176,7 +310,8 @@ class DeepItemModel(tf.keras.Model):
                                               item_tags_lookup=item_tags_lookup,
                                               item_category_lookup=item_category_lookup,
                                               item_image_lookup=item_image_lookup,
-                                              image_embedding_lookup_table=image_embedding_lookup_table)
+                                              image_embedding_lookup_table=image_embedding_lookup_table,
+                                              precomputed_embedding_lookup_table=precomputed_embedding_lookup)
 
      # Then construct the layers.
     self.dense_layers = tf.keras.Sequential(name='sequential_deep')
@@ -216,6 +351,7 @@ class ItemSimilarityModel(tfrs.Model):
                item_category_lookup=None,
                item_image_lookup=None,
                image_embedding_lookup_table=None,
+               precomputed_embedding_lookup=None,
                layer_sizes=None,
                pretrained_text_model=None,
                pretrained_image_model=None,
@@ -233,6 +369,7 @@ class ItemSimilarityModel(tfrs.Model):
                                         item_category_lookup=item_category_lookup,
                                         item_image_lookup=item_image_lookup,
                                         image_embedding_lookup_table=image_embedding_lookup_table,
+                                        precomputed_embedding_lookup=precomputed_embedding_lookup,
                                         layer_sizes=layer_sizes)
     else:
         self.item_model = ItemEmbeddingModel(features=features,
@@ -242,7 +379,8 @@ class ItemSimilarityModel(tfrs.Model):
                                              item_tags_lookup=item_tags_lookup,
                                              item_category_lookup=item_category_lookup,
                                              item_image_lookup=item_image_lookup,
-                                             image_embedding_lookup_table=image_embedding_lookup_table)
+                                             image_embedding_lookup_table=image_embedding_lookup_table,
+                                             precomputed_embedding_lookup_table=precomputed_embedding_lookup)
 
     #if isinstance(test_candidate_ids, np.ndarray):
     test_candidate_ids = tf.data.Dataset.from_tensor_slices(test_candidate_ids)
@@ -260,3 +398,79 @@ class ItemSimilarityModel(tfrs.Model):
                      candidate_embeddings=item_b_embeddings,
                     # candidate_ids=raw_features["item_b"],
                     compute_metrics=self.compute_metrics)
+
+class UserItemModel(tfrs.Model):
+  # We derive from a custom base class to help reduce boilerplate. Under the hood,
+  # these are still plain Keras Models.
+
+  def __init__(self, test_candidate_ids,
+               user_features=['location'],
+               user_feature_dims=[32],
+               location_vocab=[],
+               user_layer_sizes=[64],
+               item_features=['item_id', 'body'],
+               item_feature_dims=[32, 32],
+               item_unique_item_ids=None,
+               item_item_body_lookup=None,
+               item_item_tags_lookup=None,
+               item_item_category_lookup=None,
+               item_item_image_lookup=None,
+               item_image_embedding_lookup_table=None,
+               item_precomputed_embedding_lookup=None,
+               item_layer_sizes=[64],
+               item_pretrained_text_model=None,
+               item_pretrained_image_model=None,
+               compute_metrics=True):
+      super().__init__()
+      self.compute_metrics = compute_metrics
+      self.pretrained_text_model = item_pretrained_text_model
+      self.pretrained_image_model = item_pretrained_image_model
+      if item_layer_sizes:
+          self.item_model = DeepItemModel(features=item_features,
+                                          unique_item_ids=item_unique_item_ids,
+                                          feature_dims=item_feature_dims,
+                                          item_body_lookup=item_item_body_lookup,
+                                          item_tags_lookup=item_item_tags_lookup,
+                                          item_category_lookup=item_item_category_lookup,
+                                          item_image_lookup=item_item_image_lookup,
+                                          image_embedding_lookup_table=item_image_embedding_lookup_table,
+                                          precomputed_embedding_lookup=item_precomputed_embedding_lookup,
+                                          layer_sizes=item_layer_sizes)
+      else:
+          self.item_model = ItemEmbeddingModel(features=item_features,
+                                               feature_dims=item_feature_dims,
+                                               unique_item_ids=item_unique_item_ids,
+                                               item_body_lookup=item_item_body_lookup,
+                                               item_tags_lookup=item_item_tags_lookup,
+                                               item_category_lookup=item_item_category_lookup,
+                                               item_image_lookup=item_item_image_lookup,
+                                               image_embedding_lookup_table=item_image_embedding_lookup_table,
+                                               precomputed_embedding_lookup_table=item_precomputed_embedding_lookup)
+
+      if user_layer_sizes:
+          self.user_model = DeepUserModel(features=user_features,
+                                            feature_dims=user_feature_dims,
+                                            location_vocab=location_vocab,
+                                            layer_sizes=user_layer_sizes)
+      else:
+          self.user_model = UserEmbeddingModel(features=user_features,
+                                                 feature_dims=user_feature_dims,
+                                                 location_vocab=location_vocab)
+
+      # if isinstance(test_candidate_ids, np.ndarray):
+      test_candidate_ids = tf.data.Dataset.from_tensor_slices(test_candidate_ids)
+
+      self.task = tfrs.tasks.Retrieval(loss=tf.keras.losses.CategoricalCrossentropy(),
+                                       metrics=tfrs.metrics.FactorizedTopK(
+                                                        candidates=
+                                                        test_candidate_ids.batch(512).map(self.item_model)))
+
+  def compute_loss(self, raw_features: Dict[Text, tf.Tensor], training=False) -> tf.Tensor:
+      # Define how the loss is computed.
+      user_embeddings = self.user_model(raw_features)
+      item_embeddings = self.item_model(raw_features["candidate_item"])
+
+      return self.task(query_embeddings=user_embeddings,
+                       candidate_embeddings=item_embeddings,
+                       #candidate_ids=raw_features["candidate_item"],
+                       compute_metrics=self.compute_metrics)

@@ -18,6 +18,8 @@ def get_tf_lookup_table_for_property(es_data_hits, field, clean=False):
 
 
 def get_tf_lookup_for_dict(data_dict):
+    if type(list(data_dict.values())[0]) is list:
+        data_dict = {key:np.array(value) for key, value in data_dict.items()}
     vec_shape = list(data_dict.values())[0].shape
     lookup_table = tf.lookup.experimental.DenseHashTable(key_dtype=tf.string, value_dtype=tf.float32, empty_key="<EMPTY_SENTINEL>", deleted_key="<DELETE_SENTINEL>", default_value=tf.convert_to_tensor(np.zeros(shape=vec_shape), dtype=tf.float32))
     lookup_table.insert(list(data_dict.keys()), list(data_dict.values()))

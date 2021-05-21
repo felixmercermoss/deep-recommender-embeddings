@@ -1,9 +1,9 @@
-import json
-import pickle
-
 import tensorflow as tf
 
 from annoy import AnnoyIndex
+
+from deep_recommender_embeddings.src.io import export_embeddings_to_file
+
 
 def build_annoy_index(embeddings):
     embedding_dimension = len(list(embeddings.values())[0])
@@ -31,8 +31,6 @@ def get_dict_of_embeddings(trained_model, unique_item_ids, save_fpath=None):
         uri_to_embedding[str(item_embedding['uri'], 'utf-8')] = item_embedding['embedding']
 
     if save_fpath:
-        with open(save_fpath, 'wb') as f:
-            pickle.dump(item_embeddings, f)
-
+        export_embeddings_to_file(item_embeddings, save_fpath)
 
     return uri_to_embedding

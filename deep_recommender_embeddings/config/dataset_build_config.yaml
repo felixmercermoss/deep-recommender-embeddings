@@ -1,0 +1,7 @@
+user_logs_path: "/Users/mercef02/Projects/datasets_models/sfv_user_user_zoom_20201026_20201102/sfv_user*"
+min_journey_length: 50
+max_jourey_length: 2
+min_date:
+max_date:
+group_by_field: "audience_id"
+date_field: "visit_start_datetime"
